@@ -5,11 +5,16 @@ import shutil
 
 FAILED_CHECK = 2
 
+
 def send_message(q: multiprocessing.Queue, mess) -> None:
     try:
         q.put_nowait(mess)
     except queue.Full:
-        pass # It doesn't matter if we drop a message.
+        # It doesn't matter if we drop a message.  None of the
+        # messages are important, they are just for the UI.  The only
+        # important thing to come back from the process is the exit
+        # code.
+        pass 
 
 
 def count_files(dirname: os.PathLike, q: multiprocessing.Queue, initial_count: bool) -> (int, int):
@@ -43,10 +48,11 @@ def backup_directory(src: os.PathLike, dest: os.PathLike, num_files: int = -1, c
 
     if callback is not None:
         callback(count)
-    
+
 def backup_proc(src: os.PathLike, dst: os.PathLike, q: multiprocessing.Queue) -> None:
+    """Process started by multiprocessing to backup files from src to
+       dst.  Sends status reports to q.  Calls sys.exit() when done or on error."""
     num_files, total_size = count_files(src, q, True)
-    
 
     def cb(c: int) -> None:
         send_message(q, ('B', num_files, c))
@@ -61,6 +67,12 @@ def backup_proc(src: os.PathLike, dst: os.PathLike, q: multiprocessing.Queue) ->
 
     check_num_files, check_total_size = count_files(dst, q, False)
 
+    try:
+        os.sync()
+    except Exception, e:
+        # TODO: log
+        sys.exit(FAILED_SY
+    
     q.close()
 
     if check_num_files != num_files:
@@ -70,6 +82,8 @@ def backup_proc(src: os.PathLike, dst: os.PathLike, q: multiprocessing.Queue) ->
     if check_total_size != total_size:
         # TODO: log an error (should we lock?)
         sys.exit(FAILED_CHECK)
+
+    sys.exit(0)
         
 
 if __name__ == '__main__':
@@ -81,31 +95,35 @@ if __name__ == '__main__':
 
     q = multiprocessing.Queue(100)
 
+    # Start the process
     p = multiprocessing.Process(target=backup_proc, args=(src, dst, q))
-
     p.start()
 
     while True:
+        # Busy wait for the process to exit.
         print("sleep")
         time.sleep(1)
 
         drain = True
         while drain:
+            # Get message tuples from the q.  Don't block if the queue
+            # is empty.
             try:
                 t = q.get_nowait()
                 print(repr(t))
             except queue.Empty:
                 drain = False
 
+        # Try to join the process, but don't block.
         p.join(0)
 
         if p.exitcode is not None:
+            # The process exited
             print("Child exited", p.exitcode)
             q.close()
             p.close()
             sys.exit(0)
-            
-                                
+    
     
 
     
