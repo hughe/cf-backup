@@ -42,6 +42,8 @@ def check_disk_type(disk_path_maybe: os.PathLike) -> Optional[tuple[str, os.Path
                     logging.error("File %s does not contain one of the expected labels", backup_label_path)
         except FileNotFoundError:
             pass
+        except PermissionError:
+            pass
 
         dcim_path = os.path.join(disk_path_maybe, "DCIM")
         logger.debug("Checking for: %s", backup_label_path)
@@ -51,37 +53,43 @@ def check_disk_type(disk_path_maybe: os.PathLike) -> Optional[tuple[str, os.Path
                 return ("CF_CARD", disk_path_maybe)
         except FileNotFoundError:
             pass
+        except PermissionError:
+            pass
             
             
     return None
-    
+
+PREFIXES = [
+    "/media/pi",
+    "/tmp",
+]
 
 def find_disks() -> FindDisksResult:
     backup_a = None
     backup_b = None
     cf_card = None
-    
-    prefix = os.path.abspath("/media/pi/")
-    for fn in os.listdir(prefix):
-        disk = check_disk_type(os.path.join(prefix, fn))
-        if disk is not None:
-            lab, mount_point = disk
 
-            if lab == "BACKUP_A":
-                if backup_a is not None:
-                    logger.error("Found two disks labelled BACKUP_A")
-                    return None
-                backup_a = mount_point
-            elif lab == "BACKUP_B":
-                if backup_b is not None:
-                    logger.error("Found two disks labelled BACKUP_B")
-                    return None
-                backup_b = mount_point
-            elif lab == "CF_CARD":
-                if cf_card is not None:
-                    logger.error("Found two disks labelled CF_CARD")
-                    return None
-                cf_card = mount_point
+    for prefix in PREFIXES:
+        for fn in os.listdir(prefix):
+            disk = check_disk_type(os.path.join(prefix, fn))
+            if disk is not None:
+                lab, mount_point = disk
+
+                if lab == "BACKUP_A":
+                    if backup_a is not None:
+                        logger.error("Found two disks labelled BACKUP_A")
+                        return None
+                    backup_a = mount_point
+                elif lab == "BACKUP_B":
+                    if backup_b is not None:
+                        logger.error("Found two disks labelled BACKUP_B")
+                        return None
+                    backup_b = mount_point
+                elif lab == "CF_CARD":
+                    if cf_card is not None:
+                        logger.error("Found two disks labelled CF_CARD")
+                        return None
+                    cf_card = mount_point
                 
     return FindDisksResult(backup_a, backup_b, cf_card)
 

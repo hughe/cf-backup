@@ -1,6 +1,8 @@
 import enum
 import logging
+import multiprocessing
 import sys
+import queue
 
 from pt_miniscreen.core import App
 from pt_miniscreen.core import Component
@@ -9,10 +11,13 @@ from pt_miniscreen.core.components import Text
 from pitop.miniscreen import Miniscreen
 
 import find_disks
+import backup
 
 log = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.DEBUG)
+dbglvl = logging.DEBUG
+
+logging.basicConfig(level=dbglvl)
 
 class State(enum.Enum):
   SEARCHING = 1
@@ -21,14 +26,13 @@ class State(enum.Enum):
   BACKUP_DONE = 4
   BACKUP_ERROR = 5
 
-SEARCHING_TEXT = "Searching\n\n\n\nX to exit"
-
 class BackupUI(Component):
   # define a `default_state` dictionary to create state with known values
   default_state = dict(
     st=State.SEARCHING,
     src=None,
     dst=None,
+    tock=True,
     progress=0,
   )
 
@@ -36,50 +40,102 @@ class BackupUI(Component):
     super().__init__(**kwargs)
     self.text = self.create_child(
       Text,
-      text=SEARCHING_TEXT,
+      text="Searching +\n\n\n\nX to exit",
       font_size=10,
       align="left",
       vertical_align="top",
       wrap=False,
     )
     self._tick_interval = self.create_interval(self.tick, timeout=1)
-    logging.getLogger().setLevel(logging.DEBUG)  # Hit it with a stick.
+    self._queue = None
+    self._proc = None
+
+    # Hit log level with a stick.  I think something in the minscreen
+    # framework resets it.
+    logging.getLogger().setLevel(dbglvl)  
 
   def select_button_pressed(self):
     if self.state["st"] == State.BACKUP_READY:
       self.select_in_backup_ready()
 
   def select_in_backup_ready(self):
-    self.state.update(st=State.BACKUP_RUNNING, progress=0)
+    self.start_backup()
     self.update_text()
 
+  def start_backup(self):
+    assert self._queue is None
+    assert self._proc is None
+    self._queue = multiprocessing.Queue(100)
+
+    src = self.state["src"]
+    dst, tgt = backup.make_target_directory(self.state["dst"])
+
+    log.info("Starting Backup from : %r to %r", src, dst)
+    
+    # Start the process
+    self._proc = multiprocessing.Process(target=backup.backup_proc,
+                                         args=(src, dst, self._queue))
+    self._proc.start()
+    self.state.update(st=State.BACKUP_RUNNING, dst=dst, progress=0)
+
   def tick(self):
-    log.warning("tick")
+    log.debug("tick")
+    self.state.update(tock=not self.state["tock"])
     if self.state["st"] == State.SEARCHING:
       self.tick_in_searching()
-      
+    elif self.state["st"] == State.BACKUP_RUNNING:
+      self.tick_in_backup_running()
+    self.update_text()
 
   def tick_in_searching(self):
     res = find_disks.find_disks()
-    log.debug("find_disks: %s", res)
+    log.info("Found Disks: %s", res)
     if res.backup_a is not None and res.cf_card is not None:
       self.state.update(st=State.BACKUP_READY,
                         src=res.cf_card,
                         dst=res.backup_a)
-      self.update_text()
-      
+
+  def tick_in_backup_running(self):
+    drain = True
+    while drain:
+      # Get message tuples from the q.  Don't block if the queue
+      # is empty.
+      try:
+        t = self._queue.get_nowait()
+        print(repr(t))
+      except queue.Empty:
+        drain = False
+
+      # Try to join the process, but don't block.
+      self._proc.join(0)
+
+      if self._proc.exitcode is not None:
+        # The process exited
+        print("Child exited", self._proc.exitcode)
+        self._queue.close()
+        self._queue = None
+        self._proc.close()
+        self._proc = None
+        
 
   def update_text(self):
     def u(s):
       self.text.state.update(text=s)
-      
+
+    def ticker():
+      return "*" if self.state["tock"] else "+"
+
+    text = "NONE"
+    
     if self.state["st"] == State.SEARCHING:
-      u(SEARCHING_TEXT)
+      text = f"Searching {ticker()}\n\n\n\nX to exit"
     elif self.state["st"] == State.BACKUP_READY:
-      u(f"Ready\nS: {self.state['src']}\nD: {self.state['dst']}\n\nO to start, X to exit")
+      text = f"Ready {ticker()}\nS: {self.state['src']}\nD: {self.state['dst']}\n\nO to start, X to exit"
     elif self.state["st"] == State.BACKUP_RUNNING:
-      u(f"Running\nS: {self.state['src']}\nD: {self.state['dst']}\nP: {self.state['progress']}%\nX to exit")
-  
+      text = f"Running {ticker()}\nS: {self.state['src']}\nD: {self.state['dst']}\nP: {self.state['progress']}%\nX to exit"
+
+    u(text)
+    
   def render(self, image):
       return self.text.render(image)
     

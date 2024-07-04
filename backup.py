@@ -1,10 +1,18 @@
+import datetime
+import logging
 import multiprocessing
 import os
 import queue
 import shutil
+import sys
+import time
+import typing
 
+log = logging.getLogger(__name__)
+
+# 1 is a generic failure.
 FAILED_CHECK = 2
-
+FAILED_SYNC = 3
 
 def send_message(q: multiprocessing.Queue, mess) -> None:
     try:
@@ -15,7 +23,6 @@ def send_message(q: multiprocessing.Queue, mess) -> None:
         # important thing to come back from the process is the exit
         # code.
         pass 
-
 
 def count_files(dirname: os.PathLike, q: multiprocessing.Queue, initial_count: bool) -> (int, int):
     count = 0
@@ -33,7 +40,7 @@ def count_files(dirname: os.PathLike, q: multiprocessing.Queue, initial_count: b
     return (count, size)
 
 
-def backup_directory(src: os.PathLike, dest: os.PathLike, num_files: int = -1, callback=None) -> None:
+def backup_directory(src: os.PathLike, dst: os.PathLike, num_files: int = -1, callback=None) -> None:
     count = 0
 
     def do_copy(s, d):
@@ -69,9 +76,9 @@ def backup_proc(src: os.PathLike, dst: os.PathLike, q: multiprocessing.Queue) ->
 
     try:
         os.sync()
-    except Exception, e:
+    except Exception:
         # TODO: log
-        sys.exit(FAILED_SY
+        sys.exit(FAILED_SYNC)
     
     q.close()
 
@@ -84,6 +91,14 @@ def backup_proc(src: os.PathLike, dst: os.PathLike, q: multiprocessing.Queue) ->
         sys.exit(FAILED_CHECK)
 
     sys.exit(0)
+
+def make_target_directory(dst: os.PathLike) -> typing.Tuple[os.PathLike, str]:
+    dst = os.path.join(dst, "SDBackup")
+    now = datetime.datetime.utcnow()
+    tgt = now.strftime("%Y-%m-%d-%H-%M-%S")
+    dst = os.path.join(dst, tgt)
+    # TODO: do something if the dir already exists.
+    return (dst, tgt)
         
 
 if __name__ == '__main__':
