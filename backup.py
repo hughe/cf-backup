@@ -45,7 +45,7 @@ def backup_directory(src: os.PathLike, dst: os.PathLike, num_files: int = -1, ca
 
     def do_copy(s, d):
         nonlocal count
-        shutil.copy2(s, d)
+        shutil.copy(s, d)
         if num_files > -1:
             count += 1
             if count % 20 == 0 and callback is not None:

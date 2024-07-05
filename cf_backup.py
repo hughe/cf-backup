@@ -1,5 +1,6 @@
 import enum
 import logging
+import math
 import multiprocessing
 import sys
 import queue
@@ -80,6 +81,7 @@ class BackupUI(Component):
 
   def tick(self):
     log.debug("tick")
+    
     self.state.update(tock=not self.state["tock"])
     if self.state["st"] == State.SEARCHING:
       self.tick_in_searching()
@@ -102,7 +104,12 @@ class BackupUI(Component):
       # is empty.
       try:
         t = self._queue.get_nowait()
-        print(repr(t))
+        if t[0] == 'C':
+          pass
+        elif t[0] == 'B':
+          self.state.update(progress=t[2] / t[1])
+        else:
+          log.warning("Unknown message: %r", t)
       except queue.Empty:
         drain = False
 
@@ -111,7 +118,11 @@ class BackupUI(Component):
 
       if self._proc.exitcode is not None:
         # The process exited
-        print("Child exited", self._proc.exitcode)
+        log.info("Child exited: %d", self._proc.exitcode)
+        if self._proc.exitcode == 0:
+          self.state.update(st=State.BACKUP_DONE)
+        else:
+          self.state.update(st=State.BACKUP_ERROR)
         self._queue.close()
         self._queue = None
         self._proc.close()
@@ -119,22 +130,22 @@ class BackupUI(Component):
         
 
   def update_text(self):
-    def u(s):
-      self.text.state.update(text=s)
-
     def ticker():
       return "*" if self.state["tock"] else "+"
 
     text = "NONE"
     
     if self.state["st"] == State.SEARCHING:
-      text = f"Searching {ticker()}\n\n\n\nX to exit"
+      text = f"Searching {ticker()}\n\n\n\nX to Exit"
     elif self.state["st"] == State.BACKUP_READY:
-      text = f"Ready {ticker()}\nS: {self.state['src']}\nD: {self.state['dst']}\n\nO to start, X to exit"
+      text = f"Ready\nS: {self.state['src']}\nD: {self.state['dst']}\n\nO to start, X to Exit"
     elif self.state["st"] == State.BACKUP_RUNNING:
-      text = f"Running {ticker()}\nS: {self.state['src']}\nD: {self.state['dst']}\nP: {self.state['progress']}%\nX to exit"
+      p = math.ceil(self.state['progress'] * 100)
+      text = f"Running {ticker()}\nS: {self.state['src']}\nD: {self.state['dst']}\nP: {p}%\nX to Exit"
+    elif self.state["st"] == State.BACKUP_DONE:
+      text = f"Complete\n\n\n\nO to Unmount CF, X to Exit" # TODO: stats
 
-    u(text)
+    self.text.state.update(text=text)
     
   def render(self, image):
       return self.text.render(image)
