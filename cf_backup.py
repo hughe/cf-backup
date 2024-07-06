@@ -2,6 +2,7 @@ import enum
 import logging
 import math
 import multiprocessing
+import subprocess
 import sys
 import queue
 
@@ -26,6 +27,8 @@ class State(enum.Enum):
   BACKUP_RUNNING = 3
   BACKUP_DONE = 4
   BACKUP_ERROR = 5
+  UNMOUNTING = 6
+  UNMOUNT_FAILED = 7
 
 class BackupUI(Component):
   # define a `default_state` dictionary to create state with known values
@@ -35,6 +38,11 @@ class BackupUI(Component):
     dst=None,
     tock=True,
     progress=0,
+    exitcode=None,
+    unmounting_src=False,
+    unmounting_dst=False,
+    unmount_count=0,
+    unmount_fail_path=None,
   )
 
   def __init__(self, **kwargs):
@@ -58,11 +66,17 @@ class BackupUI(Component):
   def select_button_pressed(self):
     if self.state["st"] == State.BACKUP_READY:
       self.select_in_backup_ready()
+    elif self.state["st"] == State.BACKUP_DONE:
+      self.select_in_backup_done()
 
   def select_in_backup_ready(self):
     self.start_backup()
     self.update_text()
 
+  def select_in_backup_done(self):
+    self.state.update(st=State.UNMOUNTING, unmounting_src=True)
+    self.update_text()
+          
   def start_backup(self):
     assert self._queue is None
     assert self._proc is None
@@ -87,6 +101,8 @@ class BackupUI(Component):
       self.tick_in_searching()
     elif self.state["st"] == State.BACKUP_RUNNING:
       self.tick_in_backup_running()
+    elif self.state["st"] == State.UNMOUNTING:
+      self.tick_in_unmount()
     self.update_text()
 
   def tick_in_searching(self):
@@ -120,30 +136,84 @@ class BackupUI(Component):
         # The process exited
         log.info("Child exited: %d", self._proc.exitcode)
         if self._proc.exitcode == 0:
-          self.state.update(st=State.BACKUP_DONE)
+          self.state.update(st=State.BACKUP_DONE, exitcode=0)
         else:
-          self.state.update(st=State.BACKUP_ERROR)
+          self.state.update(st=State.BACKUP_ERROR, exitcode=self._proc.exitcode)
         self._queue.close()
         self._queue = None
         self._proc.close()
         self._proc = None
-        
+
+
+  def get_disks_to_unmount(self) -> [str]:
+    ret = []
+    fd = find_disks.find_disks()
+    
+    if self.state["unmounting_src"]:
+      if fd.cf_card:
+        ret.append(fd.cf_card)
+    if self.state["unmounting_dst"]:
+      if fd.backup_a:
+        ret.append(fd.backup_a)
+
+    return ret
+    
+  def tick_in_unmount(self):
+    # We try to unmount repeatedly, because on Pi-Top, when a disk
+    # that has previously been mounted by the 'pi' user is unmounted,
+    # it gets remounted by root, which is just annoying.  So we try 5
+    # times over 5 seconds.
+
+    disks = self.get_disks_to_unmount()
+    
+    log.info("Found disks while unmounting: %r", disks)
+
+    if self.state['unmount_count'] > 5:
+      if len(disks) > 0:
+        self.state.update(st=State.UNMOUNT_FAILED, unmount_fail_path=disks)
+      else:
+        # Success
+        self.state.update(**self.default_state) # Reset state
+      return
+
+    for path in disks:
+      self.do_unmount(path)
+
+    self.state.update(unmount_count=self.state['unmount_count'] + 1)
+
+  def do_unmount(self, path):
+    log.info("Unmounting: %s", path)
+    proc = subprocess.run(["/usr/bin/sudo", "/usr/bin/umount", path], stderr=subprocess.STDOUT)
+    if proc.returncode == 0:
+      # SUCCESS
+      log.info("Unmount successful")
+    else:
+      log.error("Unmount of %s failed: %d \"%s\"", path, proc.returncode, proc.stdout)
 
   def update_text(self):
     def ticker():
       return "*" if self.state["tock"] else "+"
 
     text = "NONE"
+
+    st = self.state["st"] 
     
-    if self.state["st"] == State.SEARCHING:
+    if st == State.SEARCHING:
       text = f"Searching {ticker()}\n\n\n\nX to Exit"
-    elif self.state["st"] == State.BACKUP_READY:
+    elif st == State.BACKUP_READY:
       text = f"Ready\nS: {self.state['src']}\nD: {self.state['dst']}\n\nO to start, X to Exit"
-    elif self.state["st"] == State.BACKUP_RUNNING:
+    elif st == State.BACKUP_RUNNING:
       p = math.ceil(self.state['progress'] * 100)
       text = f"Running {ticker()}\nS: {self.state['src']}\nD: {self.state['dst']}\nP: {p}%\nX to Exit"
-    elif self.state["st"] == State.BACKUP_DONE:
+    elif st == State.BACKUP_DONE:
       text = f"Complete\n\n\n\nO to Unmount CF, X to Exit" # TODO: stats
+    elif st == State.BACKUP_ERROR:
+      text = f"Backup Failed\nE: {self.state['exitcode']}\n\n\nX to Exit"
+    elif st == State.UNMOUNTING:
+      disks = "\n".join(self.get_disks_to_unmount())
+      text = f"Unmounting {ticker()}\n{disks}"
+    elif st == State.UNMOUNT_FAILED:
+      text = f"Failed to unmount\n {self.state['unmount_fail_path']}"
 
     self.text.state.update(text=text)
     
